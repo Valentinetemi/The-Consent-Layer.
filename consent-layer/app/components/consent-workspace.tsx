@@ -3,7 +3,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -212,9 +211,6 @@ function HoldToAuthorize({ onComplete, authorized }: { onComplete: () => void; a
   const completedRef = useRef(authorized);
   const holdDuration = 1700;
 
-  useEffect(() => {
-    if (authorized) { completedRef.current = true; setProgress(1); }
-  }, [authorized]);
   useEffect(() => () => { if (frameRef.current) cancelAnimationFrame(frameRef.current); }, []);
 
   const finish = useCallback(() => {
@@ -223,16 +219,16 @@ function HoldToAuthorize({ onComplete, authorized }: { onComplete: () => void; a
     setProgress(1);
     onComplete();
   }, [onComplete]);
-  const tick = useCallback((time: number) => {
-    const next = Math.min(1, (time - startedAtRef.current) / holdDuration);
-    setProgress(next);
-    if (next >= 1) { finish(); return; }
-    frameRef.current = requestAnimationFrame(tick);
-  }, [finish]);
   const begin = () => {
     if (completedRef.current || holding) return;
     setHolding(true);
     startedAtRef.current = performance.now();
+    const tick = (time: number) => {
+      const next = Math.min(1, (time - startedAtRef.current) / holdDuration);
+      setProgress(next);
+      if (next >= 1) { finish(); return; }
+      frameRef.current = requestAnimationFrame(tick);
+    };
     frameRef.current = requestAnimationFrame(tick);
   };
   const cancel = () => {
@@ -326,14 +322,10 @@ export default function ConsentWorkspace() {
     },
     [replaceState],
   );
-  const tools = useMemo(
-    () => buildConsentTools({ getState, applyTransition, record }),
-    [applyTransition, getState, record],
-  );
-
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
+    const tools = buildConsentTools({ getState, applyTransition, record });
     window.__consentLayerTools = Object.fromEntries(
       tools.map((tool) => [tool.name, tool]),
     );
@@ -367,7 +359,7 @@ export default function ConsentWorkspace() {
       controller.abort();
       delete window.__consentLayerTools;
     };
-  }, [replaceState, tools]);
+  }, [applyTransition, getState, record, replaceState]);
 
   useEffect(() => {
     if (!state.humanApprovedSubmission || state.submitted) return;
