@@ -11,7 +11,7 @@ import {
   requestSubmissionAuthorization,
   setApplicationFieldByAgent,
   submitApplication,
-} from "./application";
+} from "./application.ts";
 
 export interface WebMcpTool {
   name: string;
