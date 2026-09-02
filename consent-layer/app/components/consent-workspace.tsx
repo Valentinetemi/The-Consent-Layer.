@@ -289,4 +289,311 @@ function ConsentSheet({ state, onClose, onReview, onAuthorize }: { state: Applic
   );
 }
 
-// WORKSPACE_COMPONENT
+export default function ConsentWorkspace() {
+  const [state, setState] = useState<ApplicationState>(() => createInitialState());
+  const stateRef = useRef(state);
+  const [expandedFields, setExpandedFields] = useState<Set<FieldId>>(
+    () => new Set(["graduationYear"]),
+  );
+  const [incomeInput, setIncomeInput] = useState("");
+  const [incomeError, setIncomeError] = useState("");
+  const [activeSection, setActiveSection] = useState("overview");
+
+  const replaceState = useCallback(
+    (update: (current: ApplicationState) => ApplicationState) => {
+      const next = update(stateRef.current);
+      stateRef.current = next;
+      setState(next);
+      return next;
+    },
+    [],
+  );
+
+  const applyTransition = useCallback(
+    (transition: (current: ApplicationState) => TransitionResult) => {
+      const outcome = transition(stateRef.current);
+      stateRef.current = outcome.state;
+      setState(outcome.state);
+      return outcome.result;
+    },
+    [],
+  );
+
+  const getState = useCallback(() => stateRef.current, []);
+  const record = useCallback(
+    (event: Omit<ActivityEvent, "id">) => {
+      replaceState((current) => recordActivity(current, event));
+    },
+    [replaceState],
+  );
+  const tools = useMemo(
+    () => buildConsentTools({ getState, applyTransition, record }),
+    [applyTransition, getState, record],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    window.__consentLayerTools = Object.fromEntries(
+      tools.map((tool) => [tool.name, tool]),
+    );
+
+    if (!document.modelContext) {
+      replaceState((current) => setToolRegistrationStatus(current, "preview"));
+      return () => {
+        controller.abort();
+        delete window.__consentLayerTools;
+      };
+    }
+
+    registerConsentTools(document.modelContext, tools, controller.signal)
+      .then(() => {
+        if (active) {
+          replaceState((current) =>
+            setToolRegistrationStatus(current, "registered"),
+          );
+        }
+      })
+      .catch(() => {
+        if (active && !controller.signal.aborted) {
+          replaceState((current) =>
+            setToolRegistrationStatus(current, "error"),
+          );
+        }
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+      delete window.__consentLayerTools;
+    };
+  }, [replaceState, tools]);
+
+  useEffect(() => {
+    if (!state.humanApprovedSubmission || state.submitted) return;
+    const timer = window.setTimeout(() => {
+      applyTransition(submitApplication);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [applyTransition, state.humanApprovedSubmission, state.submitted]);
+
+  const toggleField = (id: FieldId) => {
+    setExpandedFields((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const saveIncome = () => {
+    const result = applyTransition((current) =>
+      setHumanHouseholdIncome(current, incomeInput),
+    );
+    if (!result.ok) {
+      setIncomeError(result.message);
+      return;
+    }
+    setIncomeInput("");
+    setIncomeError("");
+  };
+
+  const editIncome = () => {
+    setIncomeInput(state.fields.householdIncome.value.replace(/[^0-9]/g, ""));
+    replaceState((current) => ({
+      ...current,
+      fields: {
+        ...current.fields,
+        householdIncome: {
+          ...current.fields.householdIncome,
+          value: "",
+          status: "missing",
+          confidence: "Unavailable",
+          reviewed: false,
+          evidence: [],
+        },
+      },
+      authorizationRequested: false,
+      humanApprovedSubmission: false,
+      submitted: false,
+      submissionId: null,
+    }));
+  };
+
+  const closeAuthorization = () => {
+    replaceState((current) => setConsentSheetOpen(current, false));
+  };
+  const reviewChanges = () => {
+    closeAuthorization();
+    window.setTimeout(() => {
+      document
+        .getElementById("review")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+  };
+  const reset = () => {
+    const status = stateRef.current.toolRegistrationStatus;
+    const next = resetDemo();
+    next.toolRegistrationStatus = status;
+    stateRef.current = next;
+    setState(next);
+    setExpandedFields(new Set(["graduationYear"]));
+    setIncomeInput("");
+    setIncomeError("");
+    setActiveSection("overview");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const navigate = (id: string) => {
+    setActiveSection(id);
+    document
+      .getElementById(id)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const preview = getSubmissionPreview(state);
+  const progress = Math.round(
+    (getPreparedCount(state) / FIELD_ORDER.length) * 100,
+  );
+  const personalFields: FieldId[] = ["fullName", "country"];
+  const academicFields: FieldId[] = [
+    "university",
+    "fieldOfStudy",
+    "graduationYear",
+  ];
+  const narrativeFields: FieldId[] = ["academicGoals", "personalStatement"];
+
+  const renderFields = (ids: FieldId[]) => (
+    <div className="field-list">
+      {ids.map((id) => (
+        <AnswerField
+          key={id}
+          field={state.fields[id]}
+          expanded={expandedFields.has(id)}
+          onToggle={() => toggleField(id)}
+        />
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="consent-app">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark"><span /></div>
+          <div>
+            <strong>THE CONSENT LAYER</strong>
+            <span>Agents can act. Humans stay in control.</span>
+          </div>
+        </div>
+        <div className="topbar-context">
+          <span>WORKSPACE</span>
+          <strong>Future Builders Scholarship</strong>
+        </div>
+        <button className="reset-button" type="button" onClick={reset}>
+          <Icon name="reset" size={14} />Reset demo
+        </button>
+      </header>
+
+      <div className="workspace-grid">
+        <aside className="application-sidebar">
+          <div className="application-sidebar__inner">
+            <div className="scholarship-mini">
+              <span className="scholarship-mini__seal">FB</span>
+              <div><span>2027 APPLICATION</span><strong>Future Builders Scholarship</strong></div>
+            </div>
+            <div className="sidebar-progress">
+              <div><span>Application progress</span><strong>{progress}%</strong></div>
+              <div className="sidebar-progress__track"><i style={{ width: `${progress}%` }} /></div>
+            </div>
+            <nav className="section-nav" aria-label="Application sections">
+              <span className="sidebar-label">APPLICATION</span>
+              {navigation.map((item) => {
+                const itemState = item.state === "dynamic"
+                  ? state.fields.householdIncome.value ? "complete" : "blocked"
+                  : item.state;
+                return (
+                  <button key={item.id} className={activeSection === item.id ? "section-nav__item section-nav__item--active" : "section-nav__item"} type="button" onClick={() => navigate(item.id)}>
+                    <span className={`nav-dot nav-dot--${itemState}`}>{itemState === "complete" && <Icon name="check" size={9} />}</span>
+                    {item.label}
+                  </button>
+                );
+              })}
+            </nav>
+            <div className="authority-model">
+              <div className="authority-model__head"><span className="sidebar-label">AGENT AUTHORITY</span><Icon name="shield" size={15} /></div>
+              <div className="authority-rail">
+                {authorityItems.map((item, index) => (
+                  <div className="authority-item" key={item.type}>
+                    <div className="authority-item__rail"><span className={`authority-node authority-node--${item.color}`} />{index < authorityItems.length - 1 && <i />}</div>
+                    <div><strong>{item.type}</strong><span>{item.copy}</span></div>
+                  </div>
+                ))}
+              </div>
+              <p>Capability <span>≠</span> authority.</p>
+            </div>
+          </div>
+        </aside>
+
+        <main className="application-main">
+          <section className="application-hero" id="overview">
+            <div className="hero-kicker-row"><span>APPLICATION · 01 / 01</span><span className="eligible-pill"><Icon name="check" size={12} />Eligible</span></div>
+            <h1>Future Builders<br />Scholarship</h1>
+            <p>A transparent, agent-assisted application. Every answer shows where it came from—and where human authority begins.</p>
+            <div className="capability-callout"><div><Icon name="shield" size={19} /></div><p><strong>Capability ≠ authority.</strong> The agent can read, reason, and draft. You alone can provide unknowable facts and authorize submission.</p></div>
+          </section>
+
+          <section className="content-section eligibility-section" id="eligibility">
+            <SectionHeading eyebrow="00 · ELIGIBILITY" title="Eligibility confirmed" description="Five requirements checked against verified application evidence." />
+            <div className="eligibility-line"><div className="eligibility-line__status"><Icon name="check" size={18} /></div><div><strong>5 of 5 requirements supported</strong><span>Academic profile · Transcript · Applicant profile</span></div><button type="button" onClick={() => navigate("evidence")}>View evidence <Icon name="arrow" size={14} /></button></div>
+          </section>
+
+          <section className="content-section" id="personal-information">
+            <SectionHeading eyebrow="01 · PERSONAL INFORMATION" title="About you" description="Identity details copied from verified profile evidence." />
+            {renderFields(personalFields)}
+          </section>
+
+          <section className="content-section" id="academic-background">
+            <SectionHeading eyebrow="02 · ACADEMIC BACKGROUND" title="Your studies" description="Verified facts and one clearly marked high-confidence inference." />
+            {renderFields(academicFields)}
+          </section>
+
+          <section className="content-section financial-section" id="financial-information">
+            <SectionHeading eyebrow="03 · FINANCIAL INFORMATION" title="Financial context" description="Sensitive information is requested only when the evidence cannot answer." />
+            <IncomeField field={state.fields.householdIncome} value={incomeInput} error={incomeError} onChange={(value) => { setIncomeInput(value); setIncomeError(""); }} onSave={saveIncome} />
+            {state.fields.householdIncome.value && <button className="edit-income-shortcut" type="button" onClick={editIncome}>Edit human-provided answer</button>}
+          </section>
+
+          <section className="content-section" id="personal-statement">
+            <SectionHeading eyebrow="04 · PERSONAL STATEMENT" title="Your direction" description="Proposed language grounded in documented goals and experience." />
+            {renderFields(narrativeFields)}
+          </section>
+
+          <section className="content-section" id="evidence">
+            <SectionHeading eyebrow="05 · EVIDENCE" title="Source record" description="The complete evidence set used by the agent in this application." />
+            <div className="evidence-list">
+              {EVIDENCE_SOURCES.map((source, index) => (
+                <article key={source.id}><span className="evidence-index">0{index + 1}</span><div className="evidence-icon"><Icon name="document" size={18} /></div><div><strong>{source.name}</strong><p>{source.summary}</p></div><span className="evidence-kind"><Icon name="check" size={11} />{source.kind}</span></article>
+              ))}
+            </div>
+          </section>
+
+          <section className="content-section" id="certification">
+            <SectionHeading eyebrow="06 · CERTIFICATION" title="Accuracy & finality" description="This attestation is completed by your authorization—not by the agent." />
+            <div className="certification-copy"><Icon name="lock" size={19} /><p>By authorizing submission, I certify that the information in this application is accurate, complete, and final to the best of my knowledge.</p><span>HUMAN ONLY</span></div>
+          </section>
+
+          <section className="review-section" id="review">
+            <div className="review-section__copy"><span>07 · REVIEW</span><h2>{preview.ready ? "Ready for your authorization." : "One answer needs you."}</h2><p>{preview.ready ? "All eight answers are prepared. The agent has reached the boundary of its authority." : "The agent has done everything it can. Provide household income to continue."}</p></div>
+            <div className="review-summary"><div><span>Answers</span><strong>{getPreparedCount(state)} / 8</strong></div><div><span>Evidence</span><strong>3 verified</strong></div><div><span>Authorization</span><strong>{state.humanApprovedSubmission ? "Recorded" : "Not granted"}</strong></div></div>
+            <button className="authorization-button" type="button" onClick={() => applyTransition(requestSubmissionAuthorization)} disabled={!preview.ready}><span><Icon name="lock" size={17} /></span>Review & authorize<Icon name="arrow" size={17} /></button>
+            <p className="review-boundary-note"><Icon name="shield" size={14} />This action cannot be initiated by the agent.</p>
+          </section>
+        </main>
+        <div className="activity-column" aria-hidden="true" />
+      </div>
+
+      <ActivityPanel events={state.activity} registrationStatus={state.toolRegistrationStatus} />
+      <ConsentSheet state={state} onClose={closeAuthorization} onReview={reviewChanges} onAuthorize={() => applyTransition((current) => authorizeSubmission(current, "human"))} />
+    </div>
+  );
+}
